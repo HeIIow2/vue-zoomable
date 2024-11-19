@@ -10,7 +10,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, watch, nextTick } from 'vue';
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import ControlButtons from "./ControlButtons.vue";
 import ScrollOverlay from './ScrollOverlay.vue';
 
@@ -161,17 +161,12 @@ function centerElement(element: HTMLElement) {
 
 const logConst = 1 / Math.log(2);
 async function centerElementWithZoom(element: HTMLElement, p: number = 0) {
-  centerElement(element);
+  if (!container.value || !element) return;
 
-  for (let i = 0; i < 1; i++) {
-    const elementInfo = element.getBoundingClientRect();
-    const containerDimensions = container.value.getBoundingClientRect();
-
-    const x = Math.min(containerDimensions.width / (element.offsetWidth + p), containerDimensions.height / (element.offsetHeight + p))
-    const zoomCalc = logConst * (Math.log(x * 2))
-    zoom.value = x;
-    await nextTick();
-  }
+  const containerDimensions = container.value.getBoundingClientRect();
+  const elementDimensions = element.getBoundingClientRect();
+  zoom.value = Math.min(containerDimensions.width / ((elementDimensions.width / zoom.value) + p), containerDimensions.height / ((elementDimensions.height / zoom.value) + p));
+  await nextTick();
 
   centerElement(element);
 }
@@ -213,133 +208,162 @@ async function zoomIntoPoint(deltaZoom: number, oldPoint: { x: number, y: number
 /*
  * ################################# DOUBLE CLICK #################################
  */
-onMounted(() => {
-  container.value.addEventListener('dblclick', (event: PointerEvent) => {
-    centerPoint({ x: event.clientX, y: event.clientY });
-    zoom.value += props.dblClickZoomStep;
-  })
-});
+function onDblclick(event: PointerEvent) {
+  centerPoint({ x: event.clientX, y: event.clientY });
+  zoom.value += props.dblClickZoomStep;
+}
+onMounted(() => container.value.addEventListener('dblclick', onDblclick));
+onBeforeUnmount(() => container.value.removeEventListener('dblclick', onDblclick))
 
 /*
  * ################################# MOUSEWHEEL #################################
  */
 const pressedKeys: Set<String> = new Set<String>();
 const isInContainer = ref(false);
+
+const onkeydown = (event: KeyboardEvent) => { pressedKeys.add(event.key); }
+const onkeyup = (event: KeyboardEvent) => { pressedKeys.delete(event.key); }
+const onmouseenter = () => { isInContainer.value = true };
+const onmouseleave = () => { isInContainer.value = false };
+const preventingZoom = (event: WheelEvent) => {
+  if (!isInContainer.value || props.enableWheelOnKey !== "Control") return;
+  if (event.ctrlKey) event.preventDefault();
+};
+const onwheel = (event: WheelEvent) => {
+  if (props.enableWheelOnKey !== undefined && !pressedKeys.has(props.enableWheelOnKey)) {
+    showOverlay.value = true;
+    return;
+  }
+
+  zoomIntoPoint(props.dblClickZoomStep * event.deltaY / Math.abs(event.deltaY), { x: event.clientX, y: event.clientY })
+};
+
 onMounted(() => {
   // track the currently pressed keys, and mouse location
-  document.addEventListener('keydown', (event) => { pressedKeys.add(event.key); });
-  document.addEventListener('keyup', (event) => { pressedKeys.delete(event.key); });
-  container.value.addEventListener('mouseenter', () => { isInContainer.value = true });
-  container.value.addEventListener('mouseleave', () => { isInContainer.value = false });
+  document.addEventListener('keydown', onkeydown);
+  document.addEventListener('keyup', onkeyup);
+  container.value.addEventListener('mouseenter', onmouseenter);
+  container.value.addEventListener('mouseleave', onmouseleave);
 
   // prevent zooming in the viewport if necessary
-  window.addEventListener('wheel', event => {
-    if (!isInContainer.value || props.enableWheelOnKey !== "Control") return;
-    if (event.ctrlKey) event.preventDefault();
-  }, { passive: false });
+  window.addEventListener('wheel', preventingZoom, { passive: false });
 
   // the actual scrolling event within container
-  container.value.addEventListener('wheel', (event: WheelEvent) => {
-    if (props.enableWheelOnKey !== undefined && !pressedKeys.has(props.enableWheelOnKey)) {
-      showOverlay.value = true;
-      return;
-    }
-
-    zoomIntoPoint(props.dblClickZoomStep * event.deltaY / Math.abs(event.deltaY), { x: event.clientX, y: event.clientY })
-  });
+  container.value.addEventListener('wheel', onwheel);
 });
+onBeforeUnmount(() => {
+  // track the currently pressed keys, and mouse location
+  document.removeEventListener('keydown', onkeydown);
+  document.removeEventListener('keyup', onkeyup);
+  container.value.removeEventListener('mouseenter', onmouseenter);
+  container.value.removeEventListener('mouseleave', onmouseleave);
+
+  // prevent zooming in the viewport if necessary
+  window.removeEventListener('wheel', preventingZoom);
+
+  // the actual scrolling event within container
+  container.value.removeEventListener('wheel', onwheel);
+})
+
 
 /*
  * ################################# TOUCH/POINTER PAN/ZOOM #################################
  */
-onMounted(() => {
-  let movingEventId = new Set();
-  let eventCache = new Array();
-  let previousEvents: { [key: number]: PointerEvent } = {};
-  let currentEvents: { [key: number]: PointerEvent } = {};
-  let previousDistance: number | undefined = undefined;
+let movingEventId = new Set();
+let eventCache = new Array();
+let previousEvents: { [key: number]: PointerEvent } = {};
+let currentEvents: { [key: number]: PointerEvent } = {};
+let previousDistance: number | undefined = undefined;
 
-  function pointerdown_handler(event: PointerEvent) {
-    if (event.button === 1 || event.button === 2) return;
+function pointerdown_handler(event: PointerEvent) {
+  if (event.button === 1 || event.button === 2) return;
 
-    eventCache.push(event);
-    currentEvents[event.pointerId] = event;
-    previousEvents[event.pointerId] = event;
-  }
+  eventCache.push(event);
+  currentEvents[event.pointerId] = event;
+  previousEvents[event.pointerId] = event;
+}
 
-  function pointerup_handler(event: PointerEvent) {
-    for (var i = 0; i < eventCache.length; i++) {
-      if (eventCache[i].pointerId == event.pointerId) {
-        eventCache.splice(i, 1);
-        break;
-      }
+function pointerup_handler(event: PointerEvent) {
+  for (var i = 0; i < eventCache.length; i++) {
+    if (eventCache[i].pointerId == event.pointerId) {
+      eventCache.splice(i, 1);
+      break;
     }
-    delete currentEvents[event.pointerId];
-    delete previousEvents[event.pointerId];
-    movingEventId.delete(event.pointerId);
-
-    setTimeout(() => {
-      dragging.value = movingEventId.size > 0;
-    }, props.draggingDelay);
-
-    if (eventCache.length !== 2) previousDistance = undefined;
   }
+  delete currentEvents[event.pointerId];
+  delete previousEvents[event.pointerId];
+  movingEventId.delete(event.pointerId);
 
-  function pointermove_handler(event: PointerEvent) {
-    if (!eventCache.some(testEvent => testEvent.pointerId === event.pointerId)) return;
-    previousEvents[event.pointerId] = currentEvents[event.pointerId];
-    currentEvents[event.pointerId] = event;
+  setTimeout(() => {
+    dragging.value = movingEventId.size > 0;
+  }, props.draggingDelay);
 
-    movingEventId.add(event.pointerId);
-    dragging.value = true;
+  if (eventCache.length !== 2) previousDistance = undefined;
+}
 
-    if (eventCache.length == 2) {
-      const currentDistance = Math.sqrt(
-        Math.pow(currentEvents[eventCache[1].pointerId].clientX - currentEvents[eventCache[0].pointerId].clientX, 2) +
-        Math.pow(currentEvents[eventCache[1].pointerId].clientY - currentEvents[eventCache[0].pointerId].clientY, 2),
-      );
+function pointermove_handler(event: PointerEvent) {
+  if (!eventCache.some(testEvent => testEvent.pointerId === event.pointerId)) return;
+  previousEvents[event.pointerId] = currentEvents[event.pointerId];
+  currentEvents[event.pointerId] = event;
 
-      const previousPosition = {
-        x: (previousEvents[eventCache[0].pointerId].clientX + previousEvents[eventCache[1].pointerId].clientX) / 2,
-        y: (previousEvents[eventCache[0].pointerId].clientY + previousEvents[eventCache[1].pointerId].clientY) / 2,
-      };
+  movingEventId.add(event.pointerId);
+  dragging.value = true;
 
-      const currentPosition = {
-        x: (currentEvents[eventCache[0].pointerId].clientX + currentEvents[eventCache[1].pointerId].clientX) / 2,
-        y: (currentEvents[eventCache[0].pointerId].clientY + currentEvents[eventCache[1].pointerId].clientY) / 2,
-      };
+  if (eventCache.length == 2) {
+    const currentDistance = Math.sqrt(
+      Math.pow(currentEvents[eventCache[1].pointerId].clientX - currentEvents[eventCache[0].pointerId].clientX, 2) +
+      Math.pow(currentEvents[eventCache[1].pointerId].clientY - currentEvents[eventCache[0].pointerId].clientY, 2),
+    );
 
-      if (previousDistance !== undefined) {
-        zoomIntoPoint((currentDistance - previousDistance) * 0.01, currentPosition);
-      }
+    const previousPosition = {
+      x: (previousEvents[eventCache[0].pointerId].clientX + previousEvents[eventCache[1].pointerId].clientX) / 2,
+      y: (previousEvents[eventCache[0].pointerId].clientY + previousEvents[eventCache[1].pointerId].clientY) / 2,
+    };
 
-      if (currentPosition.x !== previousPosition.x || currentPosition.y !== previousPosition.y) {
-        pan.value = {
-          x: pan.value.x + (currentPosition.x - previousPosition.x),
-          y: pan.value.y + (currentPosition.y - previousPosition.y),
-        };
-      }
+    const currentPosition = {
+      x: (currentEvents[eventCache[0].pointerId].clientX + currentEvents[eventCache[1].pointerId].clientX) / 2,
+      y: (currentEvents[eventCache[0].pointerId].clientY + currentEvents[eventCache[1].pointerId].clientY) / 2,
+    };
 
-      previousDistance = currentDistance;
+    if (previousDistance !== undefined) {
+      zoomIntoPoint((currentDistance - previousDistance) * 0.01, currentPosition);
     }
 
-    else if (eventCache.length == 1) {
-      const previous = previousEvents[event.pointerId];
-      const current = currentEvents[event.pointerId]
-
+    if (currentPosition.x !== previousPosition.x || currentPosition.y !== previousPosition.y) {
       pan.value = {
-        x: pan.value.x + (current.clientX - previous.clientX),
-        y: pan.value.y + (current.clientY - previous.clientY),
+        x: pan.value.x + (currentPosition.x - previousPosition.x),
+        y: pan.value.y + (currentPosition.y - previousPosition.y),
       };
     }
+
+    previousDistance = currentDistance;
   }
 
-  container.value.onpointerdown = pointerdown_handler;
-  window.onpointerup = pointerup_handler;
-  window.onpointermove = pointermove_handler;
+  else if (eventCache.length == 1) {
+    const previous = previousEvents[event.pointerId];
+    const current = currentEvents[event.pointerId]
+
+    pan.value = {
+      x: pan.value.x + (current.clientX - previous.clientX),
+      y: pan.value.y + (current.clientY - previous.clientY),
+    };
+  }
+}
+
+onMounted(() => {
+  container.value.addEventListener('pointerdown', pointerdown_handler);
+  window.addEventListener('pointerup', pointerup_handler);
+  window.addEventListener('pointermove', pointermove_handler);
 
   container.value.style.touchAction = 'none';
-})
+});
+onBeforeUnmount(() => {
+  container.value.removeEventListener('pointerdown', pointerup_handler);
+  window.removeEventListener('pointerdown', pointerdown_handler);
+  window.removeEventListener('pointermove', pointermove_handler);
+
+  container.value.style.removeProperty('touch-action');
+});
 
 /*
  * ################################# BUTTONS #################################

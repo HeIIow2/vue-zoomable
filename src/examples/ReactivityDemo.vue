@@ -28,14 +28,19 @@
     </div>
 
     <div>
+      <button @click="hidden = !hidden">toggle hidden</button>
+    </div>
+
+    <div>
       <p>{{ dragging ? 'is dragging' : 'not dragging' }}</p>
     </div>
   </form>
 
   <div>
-    <VueZoomable ref="child" v-model:dragging="dragging" style="width: 100%; height: 500px; border: 1px solid black"
-      selector="#zoomable-content" v-model:pan="pan" v-model:zoom="zoom" v-model:enableZoom="enableZoom"
-      v-model:enablePan="enablePan" :enableWheelOnKey="documentFlow ? 'Control' : undefined">
+    <VueZoomable v-if="!hidden" ref="child" style="width: 100%; height: 500px; border: 1px solid black"
+      selector="#zoomable-content" v-model:dragging="dragging" v-model:pan="pan" v-model:zoom="zoom"
+      v-model:enableZoom="enableZoom" v-model:enablePan="enablePan"
+      :enableWheelOnKey="documentFlow ? 'Control' : undefined">
       <div id="zoomable-content">
         <div>
           <div></div>
@@ -49,6 +54,9 @@
         <div class="center"></div>
       </div>
     </VueZoomable>
+    <div v-else>
+      hihi
+    </div>
   </div>
 
   <div>
@@ -202,6 +210,8 @@ let documentFlow = ref(false);
 
 const enablePan = ref(true);
 const enableZoom = ref(true);
+
+const hidden = ref(false);
 </script>
 
 <style>
